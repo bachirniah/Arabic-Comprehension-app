@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Al-Qira'ah: Arabic Reading Master</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        font-family: 'Times New Roman', Times, serif;
+      }
+      .font-arabic {
+        font-family: 'Times New Roman', Times, serif;
+      }
+      @media print {
+        @page {
+          margin: 1.5cm;
+          size: A4;
+        }
+        .no-print {
+          display: none !important;
+        }
+        body {
+          background-color: white !important;
+          color: black !important;
+          padding: 0 !important;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+          font-family: 'Times New Roman', Times, serif !important;
+        }
+        main {
+          max-width: 100% !important;
+          padding: 0 !important;
+          margin: 0 !important;
+        }
+        article, section {
+          box-shadow: none !important;
+          border: none !important;
+          padding: 0 !important;
+          margin-bottom: 2rem !important;
+        }
+        .exercise-item {
+          page-break-inside: avoid;
+          border-top: 1px solid #eee !important;
+          padding-top: 1.5rem !important;
+        }
+        .font-arabic {
+          font-family: 'Times New Roman', Times, serif !important;
+          font-size: 1.5rem !important;
+          line-height: 2.2 !important;
+          color: black !important;
+        }
+        h1, h2, h3 {
+          color: black !important;
+        }
+        button, footer, header, .popover, [role="dialog"] {
+          display: none !important;
+        }
+        /* Ensure the Arabic text is large and clear with balanced spacing */
+        p[dir="rtl"] {
+          font-size: 1.8rem !important;
+          line-height: 2.8 !important;
+        }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3"
+  }
+}
+</script>
+</head>
+  <body class="bg-stone-50 text-stone-900">
+    <div id="root"></div>
+  </body>
+</html>
