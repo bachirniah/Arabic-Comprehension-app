@@ -1,5 +1,5 @@
 {
-  "name": "Al-Qira'ah: Arabic Reading Master",
-  "description": "An interactive Arabic reading comprehension platform that uses Gemini AI to generate customized reading passages and exercises including MCQ, True/False, and Vocabulary drills for all levels.",
+  "name": "Al Fahm",
+  "description": "An interactive Arabic reading comprehension platform that uses Gemini AI to generate customized reading passages and exercises.",
   "requestFramePermissions": []
 }

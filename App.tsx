@@ -1,12 +1,11 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Difficulty, PassageData, ProgressRecord, VocabularyWord } from './types';
-import { generatePassage, getWordDefinition, textToSpeech, generateTopicImage } from './services/geminiService';
+import { generatePassage, getWordDefinition } from './services/geminiService';
 import { ExerciseSection } from './components/ExerciseSection';
 
 const TOPICS = [
   { id: 'random', label: 'Random', icon: '🎲' },
-  { id: 'paste_text', label: 'Paste My Own Text (Teacher Mode)', icon: '🏫' },
   { id: 'news', label: 'News & Current Events', icon: '📰' },
   { id: 'culture', label: 'Culture', icon: '🏛️' },
   { id: 'history', label: 'History', icon: '📜' },
@@ -18,7 +17,7 @@ const TOPICS = [
   { id: 'custom', label: 'Custom Topic...', icon: '✏️' },
 ];
 
-const RANDOM_POOL = TOPICS.filter(t => t.id !== 'random' && t.id !== 'custom' && t.id !== 'paste_text').map(t => t.label);
+const RANDOM_POOL = TOPICS.filter(t => t.id !== 'random' && t.id !== 'custom').map(t => t.label);
 
 const STORAGE_KEYS = {
   HISTORY: 'alQiraAh_history',
@@ -26,6 +25,8 @@ const STORAGE_KEYS = {
   TOPIC: 'alQiraAh_topic',
   CUSTOM_TOPIC: 'alQiraAh_customTopic',
 };
+
+const MAINTENANCE_MODE = false; // Set to true to pause public access
 
 // Audio decoding utilities
 function decodeBase64(base64: string) {
@@ -92,12 +93,9 @@ const App: React.FC = () => {
   const [customTopic, setCustomTopic] = useState<string>(() => {
     return localStorage.getItem(STORAGE_KEYS.CUSTOM_TOPIC) || '';
   });
-  const [teacherText, setTeacherText] = useState<string>('');
 
   const [loading, setLoading] = useState(false);
   const [passage, setPassage] = useState<PassageData | null>(null);
-  const [passageImage, setPassageImage] = useState<string | null>(null);
-  const [imageLoading, setImageLoading] = useState(false);
   const [scoreData, setScoreData] = useState<{ score: number; total: number } | null>(null);
   const [showTranslation, setShowTranslation] = useState(false);
   const [showHarakat, setShowHarakat] = useState(true);
@@ -105,11 +103,8 @@ const App: React.FC = () => {
   const [currentSeed, setCurrentSeed] = useState<number | undefined>();
   const [activeTopicLabel, setActiveTopicLabel] = useState<string | null>(null);
 
-  const [audioLoading, setAudioLoading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<'slow' | 'medium' | 'fast'>('slow');
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
 
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [wordDefinition, setWordDefinition] = useState<string | null>(null);
@@ -125,7 +120,7 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(history));
   }, [history]);
 
-  const updateUrl = useCallback((topic: string, diff: Difficulty, seed: number, content?: string) => {
+  const updateUrl = useCallback((topic: string, diff: Difficulty, seed: number) => {
     try {
       const currentUrl = window.location.href;
       if (currentUrl.startsWith('blob:')) return;
@@ -134,11 +129,7 @@ const App: React.FC = () => {
       url.searchParams.set('topic', topic);
       url.searchParams.set('diff', diff);
       url.searchParams.set('seed', seed.toString());
-      if (content) {
-        url.searchParams.set('content', toBase64(content));
-      } else {
-        url.searchParams.delete('content');
-      }
+      url.searchParams.delete('content');
       window.history.replaceState({}, '', url.toString());
     } catch (e) {
       console.warn("Could not update address bar URL:", e);
@@ -158,18 +149,14 @@ const App: React.FC = () => {
         url.searchParams.set('topic', activeTopicLabel);
         url.searchParams.set('diff', difficulty);
         url.searchParams.set('seed', currentSeed.toString());
-        // For teacher-pasted text, include the raw source text
-        if (selectedTopic === 'paste_text' && teacherText) {
-          url.searchParams.set('content', toBase64(teacherText));
-        }
       }
       return url.toString();
     } catch (e) {
       return window.location.href;
     }
-  }, [activeTopicLabel, difficulty, currentSeed, selectedTopic, teacherText]);
+  }, [activeTopicLabel, difficulty, currentSeed]);
 
-  const fetchNewPassage = useCallback(async (diff: Difficulty, topicId: string, custom?: string, seed?: number, pasteText?: string) => {
+  const fetchNewPassage = useCallback(async (diff: Difficulty, topicId: string, custom?: string, seed?: number) => {
     setLoading(true);
     setError(null);
     setScoreData(null);
@@ -177,18 +164,16 @@ const App: React.FC = () => {
     setShowHarakat(true);
     setSelectedWord(null);
     setWordDefinition(null);
-    setPassageImage(null);
-    setImageLoading(true);
+    setPassage(null);
     definitionCache.current = {};
-    stopAudio();
+    window.speechSynthesis.cancel();
+    setIsPlaying(false);
     
     const newSeed = seed ?? Math.floor(Math.random() * 1000000);
     setCurrentSeed(newSeed);
     
     let effectiveTopic: string;
-    if (topicId === 'paste_text') {
-      effectiveTopic = 'Classroom Reading';
-    } else if (topicId === 'random') {
+    if (topicId === 'random') {
       effectiveTopic = RANDOM_POOL[Math.floor(Math.random() * RANDOM_POOL.length)];
     } else if (topicId === 'custom') {
       effectiveTopic = custom || 'Arabic Culture';
@@ -197,15 +182,10 @@ const App: React.FC = () => {
     }
 
     setActiveTopicLabel(effectiveTopic);
-    updateUrl(effectiveTopic, diff, newSeed, (topicId === 'paste_text') ? pasteText : undefined);
-
-    generateTopicImage(effectiveTopic).then(img => {
-      setPassageImage(img || null);
-      setImageLoading(false);
-    });
+    updateUrl(effectiveTopic, diff, newSeed);
 
     try {
-      const data = await generatePassage(diff, effectiveTopic, newSeed, pasteText);
+      const data = await generatePassage(diff, effectiveTopic, newSeed);
       setPassage(data);
     } catch (err) {
       console.error(err);
@@ -220,26 +200,8 @@ const App: React.FC = () => {
     const sharedTopic = params.get('topic');
     const sharedDiff = params.get('diff') as Difficulty;
     const sharedSeed = params.get('seed');
-    const sharedContent = params.get('content');
 
-    if (sharedContent) {
-      try {
-        const decodedContent = fromBase64(sharedContent);
-        setTeacherText(decodedContent);
-        setSelectedTopic('paste_text');
-        if (sharedDiff) setDifficulty(sharedDiff);
-        fetchNewPassage(
-          sharedDiff || difficulty, 
-          'paste_text', 
-          undefined, 
-          sharedSeed ? parseInt(sharedSeed) : undefined, 
-          decodedContent
-        );
-      } catch (e) {
-        console.error("Failed to decode shared content", e);
-      }
-    } 
-    else if (sharedTopic && sharedDiff && sharedSeed) {
+    if (sharedTopic && sharedDiff && sharedSeed) {
       setDifficulty(sharedDiff);
       setSelectedTopic('custom');
       setCustomTopic(sharedTopic);
@@ -247,45 +209,29 @@ const App: React.FC = () => {
     }
   }, [fetchNewPassage]);
 
-  const stopAudio = () => {
-    if (audioSourceRef.current) {
-      audioSourceRef.current.stop();
-      audioSourceRef.current = null;
-    }
-    setIsPlaying(false);
-  };
-
-  const handlePlayAudio = async () => {
+  const handlePlayAudio = () => {
     if (isPlaying) {
-      stopAudio();
+      window.speechSynthesis.cancel();
+      setIsPlaying(false);
       return;
     }
     if (!passage) return;
-    setAudioLoading(true);
-    try {
-      const base64Audio = await textToSpeech(passage.arabicContent, difficulty, playbackSpeed);
-      if (!base64Audio) throw new Error("Audio generation failed");
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      }
-      const decodedBytes = decodeBase64(base64Audio);
-      const audioBuffer = await decodeAudioData(decodedBytes, audioContextRef.current, 24000, 1);
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      source.start(0);
-      audioSourceRef.current = source;
-      setIsPlaying(true);
-      source.onended = () => {
-        setIsPlaying(false);
-      };
-    } catch (err) {
-      console.error(err);
-      setError("Failed to play audio.");
-    } finally {
-      setAudioLoading(false);
-    }
+
+    const utterance = new SpeechSynthesisUtterance(passage.arabicContent);
+    utterance.lang = 'ar-SA';
+    
+    // Map playback speed to rate
+    if (playbackSpeed === 'slow') utterance.rate = 0.5;
+    else if (playbackSpeed === 'medium') utterance.rate = 0.8;
+    else utterance.rate = 1.0;
+
+    utterance.onstart = () => setIsPlaying(true);
+    utterance.onend = () => setIsPlaying(false);
+    utterance.onerror = () => setIsPlaying(false);
+
+    window.speechSynthesis.speak(utterance);
   };
+
 
   const saveProgress = (score: number, total: number) => {
     if (!passage) {
@@ -318,7 +264,7 @@ const App: React.FC = () => {
     // Safely construct the share URL using URL constructor to avoid manual string concatenation errors
     const classroomUrl = new URL("https://classroom.google.com/u/0/share");
     classroomUrl.searchParams.set("url", link);
-    classroomUrl.searchParams.set("title", `Arabic Reading Master: ${passage?.title || 'New Lesson'}`);
+    classroomUrl.searchParams.set("title", `Al Fahm: ${passage?.title || 'New Lesson'}`);
     
     window.open(classroomUrl.toString(), '_blank', 'width=600,height=600');
   };
@@ -415,34 +361,37 @@ const App: React.FC = () => {
     }
   };
 
-  const handleListenToWord = async () => {
-    if (!selectedWord) return;
-    setWordAudioLoading(true);
-    try {
-      // Use slow speed for individual word help
-      const base64Audio = await textToSpeech(selectedWord, difficulty, 'slow');
-      if (!base64Audio) throw new Error("Audio generation failed");
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      }
-      const decodedBytes = decodeBase64(base64Audio);
-      const audioBuffer = await decodeAudioData(decodedBytes, audioContextRef.current, 24000, 1);
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      source.start(0);
-    } catch (err) {
-      console.error("Individual word audio failed", err);
-    } finally {
-      setWordAudioLoading(false);
-    }
+  const handleListenToWord = (word: string) => {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(word);
+    utterance.lang = 'ar-SA';
+    utterance.rate = 0.5; // Always slow for single words
+    window.speechSynthesis.speak(utterance);
   };
+
 
   const clearHistory = () => {
     if (window.confirm("Are you sure you want to clear your progress history?")) {
       setHistory([]);
     }
   };
+
+  if (MAINTENANCE_MODE) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-stone-50 text-stone-900 p-4">
+        <div className="w-24 h-24 bg-amber-100 text-amber-700 rounded-[2rem] flex items-center justify-center text-5xl mb-8 shadow-xl border-4 border-white">🚧</div>
+        <div className="text-center max-w-md">
+          <h1 className="text-3xl font-bold mb-4 tracking-tight">Service Temporarily Paused</h1>
+          <p className="text-stone-500 text-lg mb-8 leading-relaxed">
+            Al Fahm is currently undergoing maintenance or has been paused by the administrator. Please check back later.
+          </p>
+          <div className="p-4 bg-stone-100 rounded-2xl text-stone-400 text-sm font-medium italic">
+            "Knowledge is a treasure, but practice is the key to it."
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-stone-50">
@@ -543,15 +492,10 @@ const App: React.FC = () => {
               <span>📖 Define</span>
             </button>
             <button 
-              onClick={handleListenToWord}
-              disabled={wordAudioLoading}
-              className="flex-1 bg-orange-50 text-orange-700 hover:bg-orange-100 py-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50"
+              onClick={() => handleListenToWord(selectedWord)}
+              className="flex-1 bg-orange-50 text-orange-700 hover:bg-orange-100 py-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-95"
             >
-              {wordAudioLoading ? (
-                <span className="w-3 h-3 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin"></span>
-              ) : (
-                <><span>🔊</span> Listen</>
-              )}
+              <span>🔊</span> Listen
             </button>
           </div>
 
@@ -623,7 +567,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 shrink-0 cursor-pointer" onClick={() => window.location.href = window.location.origin + window.location.pathname}>
             <div className="w-10 h-10 md:w-12 md:h-12 bg-emerald-600 rounded-xl flex items-center justify-center text-white text-xl md:text-2xl font-bold shadow-emerald-100 shadow-lg">ع</div>
             <div className="hidden sm:block">
-              <h1 className="text-xl font-bold text-stone-900 tracking-tight">Al-Qira'ah</h1>
+              <h1 className="text-xl font-bold text-stone-900 tracking-tight">Al Fahm</h1>
             </div>
           </div>
           <button 
@@ -670,12 +614,12 @@ const App: React.FC = () => {
               )}
             </div>
             <button
-              onClick={() => fetchNewPassage(difficulty, selectedTopic, customTopic, undefined, selectedTopic === 'paste_text' ? teacherText : undefined)}
-              disabled={loading || (selectedTopic === 'custom' && !customTopic) || (selectedTopic === 'paste_text' && !teacherText)}
+              onClick={() => fetchNewPassage(difficulty, selectedTopic, customTopic)}
+              disabled={loading || (selectedTopic === 'custom' && !customTopic)}
               className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 md:px-6 py-1.5 md:py-2 rounded-lg font-bold text-xs md:text-sm transition shadow-md active:scale-95 disabled:opacity-50 flex items-center gap-2 shrink-0 w-full md:w-auto justify-center"
             >
               {loading ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span> : '✨'}
-              <span>{loading ? 'Processing...' : (selectedTopic === 'paste_text' ? 'Analyze My Text' : 'Generate Lesson')}</span>
+              <span>{loading ? 'Processing...' : 'Generate Lesson'}</span>
             </button>
           </div>
         </div>
@@ -683,40 +627,6 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 max-w-6xl mx-auto px-4 py-8 w-full">
-        {/* Teacher Mode Input Area */}
-        {selectedTopic === 'paste_text' && !passage && !loading && (
-          <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-top-4 duration-500 no-print">
-            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-stone-100">
-               <div className="flex items-center gap-4 mb-6">
-                 <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl">🏫</div>
-                 <div>
-                   <h2 className="text-2xl font-bold text-stone-900">Teacher's Pasteboard</h2>
-                   <p className="text-stone-500 text-sm">Paste your Arabic text below. We'll vocalize it and generate exercises.</p>
-                 </div>
-               </div>
-               <div className="relative">
-                 <textarea
-                  value={teacherText}
-                  onChange={(e) => setTeacherText(e.target.value)}
-                  placeholder="أدخل نصك العربي هنا... (Enter your Arabic text here...)"
-                  dir="rtl"
-                  className="w-full h-80 bg-stone-50 border-2 border-dashed border-stone-200 rounded-2xl p-6 font-arabic text-2xl leading-relaxed focus:border-emerald-500 focus:ring-0 transition outline-none resize-none placeholder:text-stone-300"
-                 />
-                 <div className="absolute bottom-4 left-6 text-stone-400 text-xs font-bold">
-                   {teacherText.length} characters
-                 </div>
-               </div>
-               <button 
-                  onClick={() => fetchNewPassage(difficulty, 'paste_text', undefined, undefined, teacherText)}
-                  disabled={!teacherText.trim() || loading}
-                  className="mt-8 w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white py-5 rounded-2xl font-bold text-lg shadow-lg shadow-emerald-100 transition flex items-center justify-center gap-3"
-               >
-                 ✨ Create Lesson from Text
-               </button>
-            </div>
-          </div>
-        )}
-
         {/* Printable Worksheet Header */}
         <div className="hidden print:block mb-8 border-b-2 border-stone-800 pb-4">
           <div className="flex justify-between items-start mb-6">
@@ -765,12 +675,11 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-0 overflow-hidden rounded-full shadow-sm border border-emerald-100 bg-white">
                     <button
                       onClick={handlePlayAudio}
-                      disabled={audioLoading}
                       className={`flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition ${isPlaying ? 'bg-orange-600 text-white hover:bg-orange-700' : 'text-emerald-700 hover:bg-emerald-50'}`}
                     >
-                      {audioLoading ? <span className="w-4 h-4 border-2 border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin"></span> : <span>{isPlaying ? '⏹️ Stop' : '🔊 Narrate'}</span>}
+                      <span>{isPlaying ? '⏹️ Stop' : '🔊 Narrate'}</span>
                     </button>
-                    {!isPlaying && !audioLoading && (
+                    {!isPlaying && (
                       <select 
                         value={playbackSpeed}
                         onChange={(e) => setPlaybackSpeed(e.target.value as any)}
@@ -796,10 +705,6 @@ const App: React.FC = () => {
                     {showHarakat ? 'Harakat: On' : 'Harakat: Off'}
                   </button>
                 </div>
-              </div>
-
-              <div className="aspect-video w-full bg-stone-50 print:hidden">
-                {imageLoading ? <div className="w-full h-full animate-pulse bg-stone-100"></div> : passageImage && <img src={passageImage} className="w-full h-full object-cover" alt="Passage background" />}
               </div>
 
               <div className="p-8 md:p-14">
@@ -839,29 +744,21 @@ const App: React.FC = () => {
           </div>
         ) : (
           /* Landing Page */
-          selectedTopic !== 'paste_text' && (
-            <div className="flex flex-col items-center justify-center py-24 px-4 no-print">
-              <div className="w-28 h-28 bg-emerald-100 text-emerald-700 rounded-[2rem] flex items-center justify-center text-6xl mb-10 shadow-2xl border-4 border-white">🌴</div>
-              <div className="text-center max-w-2xl">
-                <h2 className="text-4xl md:text-5xl font-bold text-stone-900 mb-6 tracking-tight">Arabic Reading Master</h2>
-                <p className="text-stone-500 text-xl mb-12 leading-relaxed">AI-curated passages and interactive drills for every student. Read, learn, and grow your fluency.</p>
-                <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                  <button 
-                    onClick={() => fetchNewPassage(difficulty, selectedTopic, customTopic)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-12 py-6 rounded-[1.5rem] font-bold text-2xl shadow-2xl transition-all hover:scale-105 active:scale-95 flex items-center gap-4"
-                  >
-                    ✨ Start Learning
-                  </button>
-                  <button 
-                    onClick={() => setSelectedTopic('paste_text')}
-                    className="bg-white border-2 border-stone-200 hover:border-emerald-600 text-stone-700 hover:text-emerald-700 px-8 py-6 rounded-[1.5rem] font-bold text-xl shadow-md transition-all flex items-center gap-4"
-                  >
-                    🏫 Teacher Mode
-                  </button>
-                </div>
+          <div className="flex flex-col items-center justify-center py-24 px-4 no-print">
+            <div className="w-28 h-28 bg-emerald-100 text-emerald-700 rounded-[2rem] flex items-center justify-center text-6xl mb-10 shadow-2xl border-4 border-white">🌴</div>
+            <div className="text-center max-w-2xl">
+              <h2 className="text-4xl md:text-5xl font-bold text-stone-900 mb-6 tracking-tight">Al Fahm</h2>
+              <p className="text-stone-500 text-xl mb-12 leading-relaxed">AI-curated passages and interactive drills for every student. Read, learn, and grow your fluency.</p>
+              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                <button 
+                  onClick={() => fetchNewPassage(difficulty, selectedTopic, customTopic)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-12 py-6 rounded-[1.5rem] font-bold text-2xl shadow-2xl transition-all hover:scale-105 active:scale-95 flex items-center gap-4"
+                >
+                  ✨ Start Learning
+                </button>
               </div>
             </div>
-          )
+          </div>
         )}
       </main>
 
